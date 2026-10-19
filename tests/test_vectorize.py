@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 
-from masktools.vectorize import mask_area, mask_to_polygons, polygons_to_mask
+from masktools._vectorize import mask_area, mask_to_polygons, polygons_to_mask
 
 from ._shapes import EXAMPLE_FITS, block, ring, staircase
 

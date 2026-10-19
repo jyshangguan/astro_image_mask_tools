@@ -121,7 +121,7 @@ def polygons_to_mask(
     """Rasterise *polygons* into a boolean mask of *mask_shape*.
 
     This is the inverse of :func:`mask_to_polygons`, and also the way to turn
-    hand-drawn polygons (see :class:`masktools.draw.MaskDrawer`) into a mask.
+    hand-drawn polygons (see :class:`masktools._draw.MaskDrawer`) into a mask.
 
     Parameters
     ----------

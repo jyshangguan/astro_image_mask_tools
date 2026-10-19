@@ -16,7 +16,7 @@ from matplotlib.axes import Axes
 from matplotlib.colors import LogNorm, Normalize
 
 from ._geometry import HALF_PIXEL, as_polygon_list, to_space
-from .vectorize import mask_to_polygons
+from ._vectorize import mask_to_polygons
 
 __all__ = [
     "make_norm",
@@ -309,7 +309,7 @@ def plot_polygons(
     ----------
     polygons : Polygon-like or list of it
         As accepted by
-        :func:`masktools.vectorize.polygons_to_mask`.
+        :func:`masktools._vectorize.polygons_to_mask`.
     ax : matplotlib.axes.Axes, optional
         Target axes.
     space : {'pixel', 'corner'}

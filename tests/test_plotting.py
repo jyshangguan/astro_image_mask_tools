@@ -13,9 +13,9 @@ from matplotlib import pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.colors import LogNorm, Normalize, PowerNorm
 
-import masktools.plotting as mp
+import masktools._plotting as mp
 from masktools._geometry import HALF_PIXEL
-from masktools.vectorize import mask_to_polygons
+from masktools._vectorize import mask_to_polygons
 
 from ._shapes import block, load_example, ring, staircase
 
@@ -339,7 +339,7 @@ def test_show_mask_overlay_false_gives_one_panel():
 
 def test_grown_mask_still_draws_inside_the_frame():
     """End-to-end: vectorise, grow, display, and stay on the grid."""
-    from masktools.transform import grow_mask
+    from masktools._transform import grow_mask
 
     _, m, _ = load_example()
     grown = grow_mask(m, 4)

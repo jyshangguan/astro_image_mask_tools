@@ -6,8 +6,8 @@ import numpy as np
 import pytest
 from shapely.geometry import Point, Polygon
 
-from masktools.transform import grow_mask, grow_polygons, scale_mask, scale_polygons
-from masktools.vectorize import mask_to_polygons, polygons_to_mask
+from masktools._transform import grow_mask, grow_polygons, scale_mask, scale_polygons
+from masktools._vectorize import mask_to_polygons, polygons_to_mask
 
 from ._shapes import block, ring, staircase
 

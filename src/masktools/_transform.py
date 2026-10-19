@@ -24,7 +24,7 @@ from ._geometry import (
     polys_to_space,
     repair,
 )
-from .vectorize import mask_to_polygons, polygons_to_mask
+from ._vectorize import mask_to_polygons, polygons_to_mask
 
 __all__ = ["scale_polygons", "grow_polygons", "scale_mask", "grow_mask"]
 
@@ -76,7 +76,7 @@ def scale_polygons(
     Parameters
     ----------
     polygons : Polygon-like or list of it
-        See :func:`masktools.vectorize.polygons_to_mask`.
+        See :func:`masktools._vectorize.polygons_to_mask`.
     factor : float
         Must be positive.  ``> 1`` enlarges, ``< 1`` shrinks.
     origin : {'centroid', 'center'} or (x, y) or `~shapely.geometry.Point`
@@ -144,7 +144,7 @@ def grow_polygons(
     Parameters
     ----------
     polygons : Polygon-like or list of it
-        See :func:`masktools.vectorize.polygons_to_mask`.
+        See :func:`masktools._vectorize.polygons_to_mask`.
     distance : float
         Pixels to add.  Negative shrinks.  Shrinking a region thinner than
         ``2 * |distance|`` deletes it, and the polygon simply disappears from
@@ -259,8 +259,8 @@ def scale_mask(
 ) -> np.ndarray:
     """Scale a mask by a multiplicative ``factor``.
 
-    Convenience wrapper: :func:`~masktools.vectorize.mask_to_polygons` ->
-    :func:`scale_polygons` -> :func:`~masktools.vectorize.polygons_to_mask`.
+    Convenience wrapper: :func:`~masktools._vectorize.mask_to_polygons` ->
+    :func:`scale_polygons` -> :func:`~masktools._vectorize.polygons_to_mask`.
     See :func:`scale_polygons` for the meaning of *factor* and *origin*, and
     :func:`grow_mask` for the usually-preferred absolute alternative.
 
@@ -281,7 +281,7 @@ def scale_mask(
         dropped.
     all_touched : bool
         Rasterisation rule; see
-        :func:`~masktools.vectorize.polygons_to_mask`.
+        :func:`~masktools._vectorize.polygons_to_mask`.
     dtype : numpy dtype, optional
         Output dtype; defaults to ``bool``.
 
@@ -333,8 +333,8 @@ def grow_mask(
 ) -> np.ndarray:
     """Grow a mask by ``distance`` pixels (negative to shrink).
 
-    Convenience wrapper: :func:`~masktools.vectorize.mask_to_polygons` ->
-    :func:`grow_polygons` -> :func:`~masktools.vectorize.polygons_to_mask`.
+    Convenience wrapper: :func:`~masktools._vectorize.mask_to_polygons` ->
+    :func:`grow_polygons` -> :func:`~masktools._vectorize.polygons_to_mask`.
 
     Parameters
     ----------
@@ -351,7 +351,7 @@ def grow_mask(
         grid toward higher row/column only -- see :func:`scale_mask`.
     all_touched : bool
         Rasterisation rule; see
-        :func:`~masktools.vectorize.polygons_to_mask`.
+        :func:`~masktools._vectorize.polygons_to_mask`.
     dtype : numpy dtype, optional
         Output dtype; defaults to ``bool``.
 

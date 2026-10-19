@@ -20,7 +20,7 @@ multiple polygons, a rasterised mask, and file I/O.
 
 Examples
 --------
->>> from masktools.draw import MaskDrawer                       # doctest: +SKIP
+>>> from masktools._draw import MaskDrawer                       # doctest: +SKIP
 >>> drawer = MaskDrawer(image, stretch='asinh')                 # doctest: +SKIP
 >>> drawer.polygons                                             # doctest: +SKIP
 >>> m = drawer.mask()                                           # doctest: +SKIP
@@ -34,11 +34,12 @@ import warnings
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.backend_bases import key_press_handler
+from matplotlib.figure import Figure
 from matplotlib.widgets import PolygonSelector as _BasePolygonSelector
 
 from ._geometry import as_polygon_list
-from .plotting import plot_image, plot_mask
-from .vectorize import mask_to_polygons, polygons_to_mask
+from ._plotting import plot_image, plot_mask
+from ._vectorize import mask_to_polygons, polygons_to_mask
 
 __all__ = ["MaskDrawer", "draw_mask"]
 
@@ -54,7 +55,7 @@ Draw a mask with the mouse:
   right click a vertex  delete it
   esc                 restart the polygon currently being drawn
 
-MaskDrawer keys:
+Keyboard:
   n   finish the current polygon and start a new one
   e   re-open the last finished polygon for editing
   d   delete the last finished polygon
@@ -114,7 +115,7 @@ class MaskDrawer:
         *mask* shape; pass it to draw on a blank canvas with no array to look
         at.  Raises if it disagrees with *data* or *mask*.
     stretch, percent, vmin, vmax, asinh_a, min_percent, max_percent, cmap
-        Passed to :func:`masktools.plotting.plot_image` for the background.
+        Passed to :func:`masktools._plotting.plot_image` for the background.
         The defaults are the plotting module's, i.e. an ``asinh`` stretch
         clipped at the 16th and 99.9th percentiles, which stays readable on a
         background-dominated frame.
@@ -246,7 +247,7 @@ class MaskDrawer:
 
         Returns a list of shapely ``Polygon`` in ``"pixel"`` space (pixel
         centres on integers), ready for
-        :func:`masktools.vectorize.polygons_to_mask`.
+        :func:`masktools._vectorize.polygons_to_mask`.
         """
         out = as_polygon_list(self.vertices, space="pixel")
         return out
@@ -514,6 +515,14 @@ class MaskDrawer:
         elif key in ("d", "backspace", "delete"):
             self.delete_last()
         elif key == "s":
+            if self.savepath is None:
+                print(
+                    "[masktools] no save path was set for this window; save the "
+                    "mask from your own code instead:\n"
+                    "    m = mask_manual(image)\n"
+                    "    np.save('mask.npy', m)"
+                )
+                return
             try:
                 self.save()
             except Exception as exc:  # pragma: no cover - interactive feedback
@@ -644,6 +653,93 @@ def _blit_ok(fig) -> bool:
     # happens on the first plt.show()/plt.subplots() in a GUI process.
     manager = getattr(fig, "manager", None)
     return isinstance(manager, FigureManagerBase)
+
+
+_POPUP_TITLE = "masktools -- draw a mask (q when done, h for help)"
+
+
+def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
+    """Run *factory(ax)* inside a dedicated window and block until it closes.
+
+    The window is deliberately **not** a pyplot figure: it is a bare
+    :class:`~matplotlib.figure.Figure` hung on a
+    :class:`~matplotlib.backends.backend_tkagg.FigureCanvasTkAgg`.  That is
+    what lets the drawing work from a Jupyter kernel whatever backend or
+    ``%matplotlib`` magic the session uses -- the kernel cannot process widget
+    events while a cell is blocked, but a Tk window runs its own event loop, so
+    one call can wait for the mouse and still return a finished mask.  The
+    caller's own inline plots are left untouched.
+
+    There is no navigation toolbar, on purpose: its pan/zoom bindings fight
+    :class:`~matplotlib.widgets.PolygonSelector` for the left mouse button.
+
+    Parameters
+    ----------
+    factory : callable
+        ``factory(ax)`` is called once the canvas exists, and must build a
+        drawer (or anything else) that accepts an ``ax`` and exposes
+        :meth:`MaskDrawer.close` and :meth:`MaskDrawer.on_close`.
+    figsize : (float, float)
+        Window size in inches.
+    title : str
+        Window title.
+
+    Returns
+    -------
+    object
+        Whatever *factory* returned, after the window has closed.
+
+    Raises
+    ------
+    RuntimeError
+        If tkinter is missing or no window system is reachable.
+    """
+    try:
+        import tkinter as tk
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    except Exception as exc:  # pragma: no cover - depends on the install
+        raise RuntimeError(
+            f"the drawing window needs tkinter, which could not be loaded ({exc!r}). "
+            "Install tkinter, or build the mask without a window: "
+            "MaskDrawer(...).add_polygon(...)."
+        ) from exc
+
+    fig = Figure(figsize=figsize)
+    root = None
+    drawer = None
+    try:
+        root = tk.Tk()
+        root.withdraw()  # the visible window is a Toplevel child of this root
+        window = tk.Toplevel(root)
+        window.title(title)
+        canvas = FigureCanvasTkAgg(fig, master=window)
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+        ax = fig.add_subplot(111)
+        drawer = factory(ax)
+
+        def _shutdown(_drawer):
+            # Deferred: Tk forbids tearing down a window from inside its own
+            # event callback.
+            root.after(0, root.destroy)
+
+        drawer.on_close(_shutdown)
+        # The window-manager close button means the same thing as 'q'.
+        window.protocol("WM_DELETE_WINDOW", drawer.close)
+        canvas.draw()
+        root.mainloop()
+    except tk.TclError as exc:  # pragma: no cover - needs a real display
+        raise RuntimeError(
+            f"could not open a drawing window ({exc}). This needs a window "
+            "system, so on a remote or headless kernel build the mask without "
+            "one: MaskDrawer(...).add_polygon(...)."
+        ) from exc
+    finally:
+        if root is not None:
+            try:
+                root.destroy()
+            except tk.TclError:  # pragma: no cover - already gone
+                pass
+    return drawer
 
 
 def draw_mask(

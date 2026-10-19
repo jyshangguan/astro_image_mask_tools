@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from matplotlib.backend_bases import KeyEvent, MouseEvent
 
-from masktools.draw import MaskDrawer, draw_mask
+from masktools._draw import MaskDrawer, draw_mask
 
 from ._shapes import block
 
@@ -129,7 +129,7 @@ def test_add_polygon_accepts_closed_ring(drawer):
 def test_mask_matches_direct_rasterisation(drawer):
     tri = [(10, 10), (30, 10), (30, 30)]
     drawer.add_polygon(tri)
-    from masktools.vectorize import polygons_to_mask
+    from masktools._vectorize import polygons_to_mask
 
     assert np.array_equal(drawer.mask(), polygons_to_mask([tri], (60, 60), space="pixel"))
 
@@ -205,7 +205,7 @@ def test_s_without_savepath_reports_not_raises(drawer, capsys):
     drawer.add_polygon([(0, 0), (5, 0), (5, 5)])
     Mouse(drawer).key("s")
     out = capsys.readouterr().out
-    assert "save failed" in out  # logged, not propagated
+    assert "no save path" in out and "np.save" in out  # logged, not propagated
 
 
 # ------------------------------------------------------------------ mask import
@@ -454,7 +454,7 @@ def test_show_warns_on_non_interactive_backend():
 
 def test_blit_is_disabled_on_non_gui_canvases():
     """Agg and ipympl must not get a blitting widget (it corrupts the redraw)."""
-    from masktools.draw import _blit_ok
+    from masktools._draw import _blit_ok
 
     import matplotlib.pyplot as plt
 

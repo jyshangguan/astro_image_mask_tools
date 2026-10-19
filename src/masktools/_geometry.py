@@ -244,7 +244,7 @@ def as_polygon_list(obj, space: str = "pixel") -> list:
     obj : Polygon-like or list of it
     space : {'pixel', 'corner'}
         The convention *obj* is expressed in.  ``"pixel"`` (the default, and
-        what :func:`masktools.vectorize.mask_to_polygons` returns) shifts by
+        what :func:`masktools._vectorize.mask_to_polygons` returns) shifts by
         ``+0.5`` to reach canonical space; ``"corner"`` is a no-op.
     """
     check_space(space)
