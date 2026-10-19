@@ -218,3 +218,18 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- astro-mask-tools -------------------------------------------------------
+# Workspace-local pytest install (14 MB); the suite runs with
+#   PYTHONPATH=src:.testdeps python3 -m pytest tests/
+# but the directory itself is never committed.
+.testdeps/
+
+# Scratch output from the examples (drawn masks, ad-hoc figures).  The
+# documentation images in examples/figures/ ARE committed.
+examples/output/
+examples/figures/*.tmp
+
+# Masks written by hand during a session
+drawn_mask.*
+*.npy

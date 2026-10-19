@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astro-mask-tools"
+version = "0.1.0"
+description = "Convert pixel masks to polygons, scale or grow them, and draw masks interactively in a notebook or a popup window."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "Shangguan Jinyi" }]
+keywords = ["astronomy", "mask", "segmentation", "polygon", "aperture", "jupyter"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "numpy>=1.23",
+    "shapely>=2.0",
+    "rasterio>=1.3",
+    "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+fits = ["astropy>=5.0"]
+notebook = ["ipympl>=0.9", "ipython>=8.0"]
+test = ["pytest>=7.0", "astropy>=5.0"]
+all = ["astro-mask-tools[fits,notebook,test]"]
+
+[project.urls]
+Homepage = "https://github.com/jyshangguan/astro_image_mask_tools"
+Source = "https://github.com/jyshangguan/astro_image_mask_tools"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+license-files = ["LICENSE"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning:masktools.*"]
