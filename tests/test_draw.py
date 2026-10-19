@@ -502,3 +502,46 @@ def test_click_only_gesture_never_anchors_to_the_origin(drawer):
     xy = drawer.vertices[0]
     assert not np.any(xy == 0.0), f"committed polygon contains an origin vertex: {xy}"
     assert not drawer.mask()[0:4, 0:4].any(), "mask pixels leaked into the frame corner"
+
+
+# ------------------------------------------------------- non-finite vertices
+def test_ctrl_released_off_the_axes_cannot_poison_a_polygon(drawer):
+    """The reported GEOSException: a modifier released with no pointer position.
+
+    Upstream puts the pending vertex back as ``(event.xdata, event.ydata)``.
+    Released while the pointer is not over the axes those are ``None``, which
+    ``np.asarray(..., float)`` turns into NaN -- and a ring that starts with NaN
+    makes shapely raise "Points of LinearRing do not form a closed linestring"
+    when the mask is finally built.
+    """
+    from matplotlib.backend_bases import KeyEvent
+
+    canvas = drawer.fig.canvas
+    canvas.callbacks.process(
+        "key_release_event", KeyEvent("key_release_event", canvas, "control")
+    )
+
+    m = Mouse(drawer)
+    for pt in [(10, 10), (30, 10), (30, 30)]:
+        m.click(*pt)
+    m.key("n")
+
+    assert len(drawer.vertices) == 1
+    xy = drawer.vertices[0]
+    assert np.isfinite(xy).all(), f"a non-finite vertex reached the polygon: {xy}"
+    assert drawer.mask().sum() > 100, "the mask must build, not raise GEOSException"
+
+
+def test_click_with_a_move_modifier_held_does_not_crash(drawer):
+    """Ctrl held, nothing placed: upstream grabs for a handle that is not there.
+
+    ``_polygon_handles.closest`` takes ``argmin`` of an empty array, so the
+    click raises inside the window and leaves the drawing unresponsive.
+    """
+    from matplotlib.backend_bases import KeyEvent
+
+    canvas = drawer.fig.canvas
+    canvas.callbacks.process(
+        "key_press_event", KeyEvent("key_press_event", canvas, "control")
+    )
+    Mouse(drawer).click(10, 10)  # must not raise

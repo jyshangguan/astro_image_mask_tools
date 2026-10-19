@@ -111,15 +111,50 @@ class _RobustPolygonSelector(_BasePolygonSelector):
         self._xys = [_unanchored()]
         self._draw_polygon_without_update()
 
+    def _press(self, event):
+        # Nothing has been placed yet, so there is no tool handle to grab.
+        # Upstream asks for the closest one anyway and takes argmin of an empty
+        # array, which crashes the window as soon as a click lands while a move
+        # modifier (ctrl/shift) is held down.
+        if len(self._xys) < 2:
+            self._xys_at_press = list(self._xys)
+            return
+        super()._press(event)
+
     def _on_key_press(self, event):
+        # Upstream pops the pending vertex when a move modifier goes down.
+        # Popping an already-empty list raises ``IndexError: pop from empty
+        # list`` and leaves the widget dead, so skip the pop instead.
         if not self._xys:
-            self._xys = [_unanchored()]
+            return
         super()._on_key_press(event)
 
     def _on_key_release(self, event):
+        # Upstream puts the pending vertex back as ``(event.xdata,
+        # event.ydata)``.  With the pointer off the axes those are ``None`` --
+        # not a point -- and ``np.asarray(..., float)`` later turns them into
+        # NaN, which shapely rejects with "Points of LinearRing do not form a
+        # closed linestring".  Releasing Ctrl or Shift with the cursor off the
+        # image is enough to do it.  Put back an unusable coordinate instead.
+        if event.xdata is None or event.ydata is None:
+            if event.key in (
+                self._state_modifier_keys.get("move_vertex"),
+                self._state_modifier_keys.get("move_all"),
+            ):
+                if not self._xys or np.isfinite(self._xys[-1]).all():
+                    self._xys.append(_unanchored())
+            elif not self._xys:
+                self._xys = [_unanchored()]
+            self._draw_polygon()
+            return
+        # A release with no matching press (Ctrl or Shift held while the window
+        # opened) would leave the placeholder in front of the point upstream
+        # appends; a ring that starts at that point cannot be built.
+        if len(self._xys) == 1 and not np.isfinite(self._xys[0]).all():
+            self._xys = []
+        super()._on_key_release(event)
         if not self._xys:
             self._xys = [_unanchored()]
-        super()._on_key_release(event)
 
 
 class MaskDrawer:
@@ -290,10 +325,10 @@ class MaskDrawer:
     @property
     def vertices(self) -> list[np.ndarray]:
         """Raw vertex arrays of every polygon, finished and in-progress."""
-        arrays = [np.asarray(xy, dtype=float) for xy in self._committed]
+        arrays = [_finite_xy(xy) for xy in self._committed]
         live = self._selector.verts
         if live:
-            xy = np.asarray(live, dtype=float)
+            xy = _finite_xy(live)
             if len(xy) >= 2 and _is_closed(xy):
                 xy = xy[:-1]
             if len(xy) >= 3:
@@ -600,7 +635,7 @@ class MaskDrawer:
         if not verts:
             self._log("no polygon to finish")
             return
-        xy = np.asarray(verts, dtype=float)
+        xy = _finite_xy(verts)
         if _is_closed(xy):
             xy = xy[:-1]
         if len(xy) < 3:
@@ -697,6 +732,20 @@ def _is_closed(xy) -> bool:
     """True if the first and last vertex of *xy* coincide."""
     xy = np.asarray(xy, dtype=float)
     return len(xy) > 2 and np.array_equal(xy[0], xy[-1])
+
+
+def _finite_xy(xy) -> np.ndarray:
+    """Return *xy* as an ``(N, 2)`` float array without unusable vertices.
+
+    A vertex can end up as ``(None, None)`` -- a modifier key released while the
+    pointer is off the axes -- which becomes NaN on conversion.  A ring that
+    starts with NaN is rejected by shapely ("Points of LinearRing do not form a
+    closed linestring"), so such vertices are dropped rather than passed on.
+    """
+    arr = np.asarray(xy, dtype=float)
+    if arr.size == 0:
+        return arr.reshape(0, 2)
+    return arr[np.isfinite(arr).all(axis=1)]
 
 
 def _blit_ok(fig) -> bool:
