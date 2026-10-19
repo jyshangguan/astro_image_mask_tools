@@ -304,6 +304,42 @@ def test_the_window_runs_in_a_child_process_and_returns_the_mask(monkeypatch, tm
     assert out.sum() > 20
 
 
+def test_saving_from_the_window_writes_the_file(monkeypatch, tmp_path):
+    """`s` in the window must still write a file now that it runs elsewhere.
+
+    The save path travels to the child process in the pickled spec, so this is
+    the one part of the window's old behaviour that crosses the boundary.
+    """
+    stub = tmp_path / "saving_popup.py"
+    stub.write_text(
+        "import sys\n"
+        "import matplotlib\n"
+        "matplotlib.use('Agg')\n"
+        "import masktools._draw as draw\n"
+        "def fake_run(factory, figsize=(8, 8), title='', parent_pid=None):\n"
+        "    from matplotlib.backend_bases import KeyEvent\n"
+        "    from matplotlib.figure import Figure\n"
+        "    fig = Figure()\n"
+        "    drawer = factory(fig.add_subplot(111))\n"
+        "    drawer.add_polygon([(2, 2), (9, 2), (9, 9)])\n"
+        "    drawer._on_key(KeyEvent('key_press_event', fig.canvas, 's'))\n"
+        "    drawer.close()\n"
+        "    return drawer\n"
+        "draw._run_in_popup = fake_run\n"
+        "from masktools._popup_worker import main\n"
+        "main(['worker', sys.argv[1]])\n"
+    )
+    from masktools import _draw
+
+    monkeypatch.setattr(
+        _draw, "_popup_command", lambda spec: [sys.executable, str(stub), str(spec)]
+    )
+    target = tmp_path / "mask_from_window.npy"
+    out = mt.mask_manual(shape=(12, 12), savepath=str(target), verbose=False)
+    assert target.exists(), "pressing 's' wrote no file: the save path was lost"
+    assert np.array_equal(np.load(target), out)
+
+
 def test_a_window_process_that_dies_is_reported(monkeypatch, tmp_path):
     stub = tmp_path / "dead_popup.py"
     stub.write_text("import sys\nprint('boom')\nsys.exit(3)\n")

@@ -79,7 +79,11 @@ of the star's light at `factor=1`, 96% at 2.0, and all of it at 3.0.
 `mask_manual` opens a window on the image, waits for you to trace polygons, and
 returns the mask when you press `q`. It behaves the same from a Jupyter notebook,
 a Qt console, or a script: the call blocks, and it never changes your matplotlib
-backend or your `%matplotlib` magic.
+backend or your `%matplotlib` magic. The window runs in a process of its own, so
+a stalled window can never take the notebook kernel with it.
+
+It **returns** the mask; it writes nothing to disk by itself. Save the array
+yourself, or pass `savepath="mask.fits"` and press `s` in the window.
 
 | key / gesture | action |
 |---|---|
@@ -122,7 +126,7 @@ combining the two, and saving the result as FITS with the WCS intact.
 PYTHONPATH=src python -m pytest tests/ -q
 ```
 
-265 passed. The suite drives the drawing widget with synthetic mouse and keyboard
+266 passed. The suite drives the drawing widget with synthetic mouse and keyboard
 events, so the interactive path is covered without opening a window, and
 `tests/test_readme_claims.py` re-executes every number quoted above.
 
