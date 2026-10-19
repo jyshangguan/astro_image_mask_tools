@@ -464,6 +464,76 @@ def test_close_button_survives_a_catastrophic_close(monkeypatch):
 
 
 @pytest.mark.skipif(not _display_available(), reason="needs a window system")
+def test_ctrl_c_closes_the_window_instead_of_freezing_it():
+    """Ctrl-C must close the window, not leave a dead panel on screen.
+
+    Reported as "the window stays open and nothing closes it".  A SIGINT
+    delivered while the main thread sits in Tcl's event loop is taken by Tk in
+    the middle of its own dispatch: the loop stops servicing events but
+    ``mainloop()`` does not return, so the mouse, ``q`` and the window's close
+    button all go dead and the cell stays blocked for the rest of the kernel's
+    life.  The window treats SIGINT like its close button instead, and still
+    returns the polygons finished before it.
+
+    The interrupt is delivered by calling the installed handler, which is
+    exactly what the OS does on the process's behalf -- with the handler
+    missing (the old behaviour) it raises KeyboardInterrupt inside a Tk
+    callback and reproduces the freeze.
+    """
+    import signal
+
+    state = {}
+
+    def factory(ax):
+        widget = ax.figure.canvas.get_tk_widget()
+        top, root = widget.winfo_toplevel(), widget.winfo_toplevel().master
+        drawer = MaskDrawer(shape=(30, 30), ax=ax, verbose=False)
+        drawer.add_polygon([(4, 4), (20, 4), (20, 20)])
+        state["root"], state["top"] = root, top
+
+        def deliver_sigint():
+            handler = signal.getsignal(signal.SIGINT)
+            state["handler"] = handler
+            handler(signal.SIGINT, None)
+
+        def watchdog():
+            state["watchdog"] = True
+            root.destroy()
+
+        widget.after(60, deliver_sigint)
+        widget.after(4000, watchdog)
+        return drawer
+
+    previous = signal.getsignal(signal.SIGINT)
+    drawer = None
+    try:
+        drawer = _run_in_popup(factory)
+    except KeyboardInterrupt:
+        pass  # the freeze's cousin: the interrupt escaped instead of closing
+    try:
+        assert drawer is not None, (
+            "SIGINT escaped mainloop instead of closing the window"
+        )
+        assert not state.get("watchdog"), (
+            "SIGINT did nothing: only the 4 s watchdog ended mainloop, so the "
+            "window was left dead on screen"
+        )
+        assert state["handler"] is not signal.default_int_handler, (
+            "SIGINT was not intercepted, so Ctrl-C lands inside Tcl's dispatch"
+        )
+        assert not _alive(state["root"]) and not _alive(state["top"]), (
+            "mainloop returned but the window is still on screen"
+        )
+        assert drawer.mask().sum() > 100, "the polygon drawn before Ctrl-C was lost"
+        assert signal.getsignal(signal.SIGINT) is previous, (
+            "the SIGINT handler was not put back after the window closed"
+        )
+    finally:
+        if drawer is not None:
+            drawer.teardown()
+
+
+@pytest.mark.skipif(not _display_available(), reason="needs a window system")
 def test_tk_callback_errors_are_reported_to_the_cell(capsys):
     """Nothing in the window may fail silently -- that silence was the bug."""
 

@@ -29,7 +29,9 @@ Examples
 from __future__ import annotations
 
 import os
+import signal
 import sys
+import threading
 import warnings
 
 import numpy as np
@@ -62,6 +64,7 @@ Keyboard:
   d   delete the last finished polygon
   s   save the mask (needs a save path)
   q   finish and close the window
+  Ctrl-C also closes the window, keeping what you drew
 """
 
 
@@ -806,8 +809,45 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
         drawer.on_close(_shutdown)
         # The window-manager close button means the same thing as 'q'.
         window.protocol("WM_DELETE_WINDOW", _leave)
+
+        # Ctrl-C must not freeze the window.  A KeyboardInterrupt raised while
+        # the main thread sits inside Tcl's event loop does not unwind it: Tk
+        # takes the exception in the middle of its own dispatch, stops
+        # servicing events, and mainloop() never returns -- the window goes
+        # dead (it ignores the mouse, 'q' and its own close button) and the
+        # cell stays blocked for the rest of the kernel's life.  So SIGINT is
+        # intercepted for the duration and treated like the close button,
+        # which still returns the polygons finished so far.
+        stop_requested = []
+        previous_sigint = None
+
+        def _request_stop(*_args):
+            stop_requested.append(True)
+
+        if threading.current_thread() is threading.main_thread():
+            try:
+                previous_sigint = signal.signal(signal.SIGINT, _request_stop)
+            except (ValueError, OSError):  # pragma: no cover - odd platforms
+                previous_sigint = None
+
+        def _poll_for_stop():
+            if stop_requested:
+                _leave()
+                return
+            if getattr(drawer, "_closed", False):
+                return  # the window is already on its way out
+            root.after(100, _poll_for_stop)
+
+        root.after(100, _poll_for_stop)
         canvas.draw()
-        root.mainloop()
+        try:
+            root.mainloop()
+        finally:
+            if previous_sigint is not None:
+                try:
+                    signal.signal(signal.SIGINT, previous_sigint)
+                except (ValueError, OSError):  # pragma: no cover
+                    pass
     except tk.TclError as exc:  # pragma: no cover - needs a real display
         raise RuntimeError(
             f"could not open a drawing window ({exc}). This needs a window "
