@@ -122,7 +122,7 @@ combining the two, and saving the result as FITS with the WCS intact.
 PYTHONPATH=src python -m pytest tests/ -q
 ```
 
-262 passed. The suite drives the drawing widget with synthetic mouse and keyboard
+263 passed. The suite drives the drawing widget with synthetic mouse and keyboard
 events, so the interactive path is covered without opening a window, and
 `tests/test_readme_claims.py` re-executes every number quoted above.
 

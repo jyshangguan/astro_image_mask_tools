@@ -768,6 +768,50 @@ def _blit_ok(fig) -> bool:
 
 _POPUP_TITLE = "masktools -- draw a mask (q when done, h for help)"
 
+#: The one Tk interpreter this process uses, created on first use.
+_TCL_ROOT = None
+
+
+def _report_callback_error(exc, val, tb) -> None:
+    """Report an exception raised inside a Tk callback.
+
+    Tk's own handler writes to stderr, which a Jupyter notebook does not show,
+    so a failure while closing used to look exactly like a hang.  Print into
+    the cell's own stream instead: visible, and still not fatal.
+    """
+    import traceback
+
+    print("[masktools] unexpected error in the drawing window:", flush=True)
+    traceback.print_exception(exc, val, tb, file=sys.stdout)
+    sys.stdout.flush()
+
+
+def _tcl_root(tk):
+    """Return this process's Tk interpreter, creating it on first use.
+
+    Creating and destroying a Tk interpreter on every call is what makes a
+    long-lived kernel die: on macOS the interpreter is torn down while
+    matplotlib still holds canvas objects for it, and Tcl aborts
+    (``Tcl_AsyncDelete: async handler deleted by the wrong thread``).  One
+    interpreter per process, with a fresh ``Toplevel`` per window, is the
+    supported pattern; ``mainloop`` is ended with ``quit()`` and the
+    interpreter is left alone.
+    """
+    global _TCL_ROOT
+    root = _TCL_ROOT
+    if root is not None:
+        try:
+            if root.winfo_exists():
+                return root
+        except Exception:  # pragma: no cover - interpreter went away
+            pass
+    root = tk.Tk()
+    root.withdraw()  # the visible window is a Toplevel child of this root
+    root.report_callback_exception = _report_callback_error
+    _TCL_ROOT = root
+    return root
+
+
 
 def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
     """Run *factory(ax)* inside a dedicated window and block until it closes.
@@ -817,23 +861,10 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
 
     fig = Figure(figsize=figsize)
     root = None
+    window = None
     drawer = None
     try:
-        root = tk.Tk()
-
-        def _report(exc, val, tb):
-            # Tk sends exceptions raised in event callbacks here.  The default
-            # handler writes to stderr, which a Jupyter notebook does not show,
-            # so a crash while closing looked exactly like a hang.  Print into
-            # the cell's own stream instead: visible, and still not fatal.
-            import traceback
-
-            print("[masktools] unexpected error in the drawing window:", flush=True)
-            traceback.print_exception(exc, val, tb, file=sys.stdout)
-            sys.stdout.flush()
-
-        root.report_callback_exception = _report
-        root.withdraw()  # the visible window is a Toplevel child of this root
+        root = _tcl_root(tk)
         window = tk.Toplevel(root)
         window.title(title)
         canvas = FigureCanvasTkAgg(fig, master=window)
@@ -841,19 +872,29 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
         ax = fig.add_subplot(111)
         drawer = factory(ax)
 
-        def _shutdown(_drawer):
+        loop_running = [False]
+
+        def _end_loop():
             # Deferred: Tk forbids tearing down a window from inside its own
-            # event callback.
-            root.after(0, root.destroy)
+            # event callback.  quit() ends mainloop() without destroying the
+            # interpreter, which is reused by the next call.  Only schedule it
+            # while a loop is actually running: a quit left pending from a
+            # window that was already closed would end the *next* window's
+            # loop the moment it starts.
+            if loop_running[0]:
+                root.after(0, root.quit)
+
+        def _shutdown(_drawer):
+            _end_loop()
 
         def _leave():
             # The window-manager close button.  close() is now exception-safe,
             # but the teardown must not depend on that holding for every future
-            # edit, so destroying the window is unconditional.
+            # edit, so ending the loop is unconditional.
             try:
                 drawer.close()
             finally:
-                root.after(0, root.destroy)
+                _end_loop()
 
         drawer.on_close(_shutdown)
         # The window-manager close button means the same thing as 'q'.
@@ -889,9 +930,11 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
 
         root.after(100, _poll_for_stop)
         canvas.draw()
+        loop_running[0] = True
         try:
             root.mainloop()
         finally:
+            loop_running[0] = False
             if previous_sigint is not None:
                 try:
                     signal.signal(signal.SIGINT, previous_sigint)
@@ -904,9 +947,11 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
             "one: MaskDrawer(...).add_polygon(...)."
         ) from exc
     finally:
-        if root is not None:
+        # Tear down the window, never the interpreter: the interpreter is
+        # shared with every later call in this process (see _tcl_root).
+        if window is not None:
             try:
-                root.destroy()
+                window.destroy()
             except tk.TclError:  # pragma: no cover - already gone
                 pass
     return drawer

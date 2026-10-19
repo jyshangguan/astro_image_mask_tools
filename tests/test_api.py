@@ -415,7 +415,10 @@ def test_close_button_still_closes_when_the_commit_fails(monkeypatch):
             "wrapper that guarantees the teardown"
         )
         assert drawer._closed is True, "mainloop returned but the drawer never closed"
-        assert not _alive(state["root"]), "the window is still alive"
+        assert not _alive(state["top"]), (
+            "the visible panel is still on screen; only the Tk interpreter is "
+            "reused, the window itself must go"
+        )
         assert not _alive(state["top"]), (
             "mainloop returned but the visible panel is still on screen -- the "
             "reported symptom: a dead window the user cannot get rid of"
@@ -458,9 +461,52 @@ def test_close_button_survives_a_catastrophic_close(monkeypatch):
     assert not state.get("watchdog"), (
         "the close button did nothing: only the 4 s watchdog ended mainloop"
     )
-    assert not _alive(state["root"]), "window survived a failed close()"
+    assert not _alive(state["top"]), "window survived a failed close()"
     assert not _alive(state["top"]), "the visible panel survived"
     drawer.teardown()
+
+
+@pytest.mark.skipif(not _display_available(), reason="needs a window system")
+def test_two_windows_in_a_row_reuse_one_interpreter():
+    """A notebook runs this cell many times; the Tk interpreter is shared.
+
+    Each call used to build and destroy a whole Tk interpreter -- the teardown
+    macOS Tcl aborts on -- and a quit left pending after one window had closed
+    ended the next window's loop before its own callbacks could run.
+    """
+    interpreters = []
+
+    def factory(ax):
+        widget = ax.figure.canvas.get_tk_widget()
+        interpreters.append(widget.winfo_toplevel().master)
+        root = widget.winfo_toplevel()
+        drawer = MaskDrawer(shape=(20, 20), ax=ax, verbose=False)
+        drawer.add_polygon([(2, 2), (18, 2), (18, 18)])
+
+        def press_q():
+            from matplotlib.backend_bases import KeyEvent
+
+            ax.figure.canvas.callbacks.process(
+                "key_press_event",
+                KeyEvent("key_press_event", ax.figure.canvas, "q"),
+            )
+
+        root.after(40, press_q)
+        widget.after(4000, lambda: root.destroy())
+        return drawer
+
+    drawers = [_run_in_popup(factory) for _ in range(3)]
+    for n, drawer in enumerate(drawers, 1):
+        assert drawer._closed is True, f"window {n} did not close"
+        assert not _alive(drawer.fig.canvas.get_tk_widget()), (
+            f"window {n} is still on screen"
+        )
+        assert drawer.mask().sum() > 100, f"window {n} lost its polygon"
+    assert len(set(map(id, interpreters))) == 1, (
+        "each window built its own Tk interpreter; tearing them down is what "
+        "makes a long-lived kernel die"
+    )
+    assert _alive(interpreters[0]), "the shared interpreter was destroyed"
 
 
 @pytest.mark.skipif(not _display_available(), reason="needs a window system")
@@ -521,7 +567,7 @@ def test_ctrl_c_closes_the_window_instead_of_freezing_it():
         assert state["handler"] is not signal.default_int_handler, (
             "SIGINT was not intercepted, so Ctrl-C lands inside Tcl's dispatch"
         )
-        assert not _alive(state["root"]) and not _alive(state["top"]), (
+        assert not _alive(state["top"]), (
             "mainloop returned but the window is still on screen"
         )
         assert drawer.mask().sum() > 100, "the polygon drawn before Ctrl-C was lost"
@@ -557,7 +603,7 @@ def test_tk_callback_errors_are_reported_to_the_cell(capsys):
 
     drawer = _run_in_popup(factory)
     try:
-        assert str(seen.get("qualname", "")).startswith("_run_in_popup"), (
+        assert str(seen.get("qualname", "")).startswith("_report_callback_error"), (
             f"Tk errors go to {seen.get('qualname')!r}: the default handler writes "
             "to stderr, which a notebook never shows, so a crash looks like a hang"
         )
