@@ -461,3 +461,44 @@ def test_blit_is_disabled_on_non_gui_canvases():
     fig, ax = plt.subplots()
     assert _blit_ok(fig) is False
     plt.close(fig)
+
+
+# ----------------------------------------------------------- the origin anchor
+def test_fresh_selector_has_no_pending_vertex_at_the_origin(drawer):
+    """Upstream parks the selector's mandatory pending vertex at data (0, 0).
+
+    That rendered as a handle dot in the lower-left corner the moment the
+    window opened and anchored the first polygon to the corner during
+    click-only gestures; users pressed Escape before their first click to
+    clear it.  The drawer's selector parks it at NaN instead.
+    """
+    x, y = drawer._selector._xys[0]
+    assert not np.isfinite([x, y]).all(), (
+        f"pending vertex sits at {(x, y)}: the window opens anchored to the origin"
+    )
+
+
+def test_click_only_gesture_never_anchors_to_the_origin(drawer):
+    """Vertices placed by clicking must not be tethered to the frame corner.
+
+    ``_release`` does not repaint, so the polyline the user sees next is drawn
+    by ``_onmove`` straight through the pending vertex.  Upstream that vertex is
+    the data origin, so it survives every click until the pointer moves, and the
+    first move paints a line out of the lower-left corner.  ``_xys`` is the
+    ground truth for that repaint.
+    """
+    m = Mouse(drawer)
+    for pt in [(10, 10), (30, 10), (30, 30), (10, 30)]:
+        m.click(*pt)
+
+    pending = list(drawer._selector._xys)
+    assert (0.0, 0.0) not in pending, (
+        f"the polygon being drawn is tethered to the data origin: {pending}"
+    )
+
+    m.move(12, 12)  # the repaint the user actually sees
+    m.key("n")      # commit
+    assert len(drawer.vertices) == 1
+    xy = drawer.vertices[0]
+    assert not np.any(xy == 0.0), f"committed polygon contains an origin vertex: {xy}"
+    assert not drawer.mask()[0:4, 0:4].any(), "mask pixels leaked into the frame corner"

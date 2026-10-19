@@ -65,26 +65,57 @@ Keyboard:
 """
 
 
-class _RobustPolygonSelector(_BasePolygonSelector):
-    """PolygonSelector that cannot be broken by an Esc-then-modifier keypress.
+def _unanchored() -> tuple[float, float]:
+    """The pending vertex to start a polygon from: nowhere in particular.
 
-    Upstream, ``escape`` calls :meth:`clear`, which resets the internal vertex
-    list to a single pending point.  Holding a modifier (shift/ctrl) then pops
-    that point, and the *next* modifier press hits
-    ``self._xys.pop()`` on an empty list -- ``IndexError: pop from empty
-    list`` -- which disconnects nothing but leaves the widget dead for the rest
-    of the session.  Guarding the pop costs one comparison and keeps the
-    drawing usable.
+    :class:`~matplotlib.widgets.PolygonSelector` always keeps one extra point
+    at the end of its internal list, which follows the cursor and is dropped
+    again by the ``verts`` getter.  Upstream parks that point at data
+    ``(0, 0)``.  Until the cursor moves it is an ordinary finite coordinate, so
+    the polyline is drawn *through* it: the window opened with the drawing
+    tethered to the lower-left corner of the frame, and a gesture that places
+    vertices by clicking (a trackpad tap sends no motion event at all) picked
+    up a spurious corner at the origin.  NaN ends the line instead of reaching
+    for the corner, so the first vertex lands exactly where it was clicked.
     """
+    return (float("nan"), float("nan"))
+
+
+class _RobustPolygonSelector(_BasePolygonSelector):
+    """PolygonSelector that never tethers the drawing to the data origin.
+
+    See :func:`_unanchored`: the mandatory pending vertex starts as NaN rather
+    than ``(0, 0)``, both when the widget is built and after every ``clear()``,
+    so nothing is ever drawn to the frame corner.
+
+    It also cannot be broken by an Esc-then-modifier keypress.  Upstream,
+    ``escape`` calls :meth:`clear`, which resets the internal vertex list to a
+    single pending point.  Holding a modifier (shift/ctrl) then pops that point,
+    and the *next* modifier press hits ``self._xys.pop()`` on an empty list --
+    ``IndexError: pop from empty list`` -- which disconnects nothing but leaves
+    the widget dead for the rest of the session.  Guarding the pop costs one
+    comparison and keeps the drawing usable.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._xys = [_unanchored()]
+
+    def _clear_without_update(self):
+        # clear() is the only supported reset; it re-parks the pending vertex at
+        # the origin, so undo that before the artists are refreshed.
+        super()._clear_without_update()
+        self._xys = [_unanchored()]
+        self._draw_polygon_without_update()
 
     def _on_key_press(self, event):
         if not self._xys:
-            self._xys = [(0, 0)]
+            self._xys = [_unanchored()]
         super()._on_key_press(event)
 
     def _on_key_release(self, event):
         if not self._xys:
-            self._xys = [(0, 0)]
+            self._xys = [_unanchored()]
         super()._on_key_release(event)
 
 
