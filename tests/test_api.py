@@ -359,3 +359,159 @@ def test_real_window_opens_runs_and_terminates_by_itself():
         assert m.sum() > 100, f"the polygon should have rasterised, got {m.sum()} px"
     finally:
         drawer.teardown()
+
+
+# ------------------------------------------------------- the hang regression
+# mask_manual could hang forever, silently, when the user closed the window
+# after drawing.  close() committed the polygon in progress *before* arming the
+# teardown, so any failure there skipped root.destroy(): mainloop() kept
+# spinning, the window refused to close, and because the exception had happened
+# inside a Tk event callback it went to Tk's background-error hook, whose output
+# a notebook does not show.  Symptom: a dead panel and no traceback anywhere.
+#
+# Every test below presses the close button from INSIDE the event loop.  That is
+# not stylistic: _run_in_popup registers WM_DELETE_WINDOW after factory() has
+# returned, so a handler read during construction is matplotlib's, not ours, and
+# the test would silently exercise nothing.  A watchdog destroys the root after
+# four seconds so a regression fails instead of hanging the suite.
+
+
+@pytest.mark.skipif(not _display_available(), reason="needs a window system")
+def test_close_button_still_closes_when_the_commit_fails(monkeypatch):
+    """The reported hang: draw, then press the window's close button."""
+
+    def boom(self):
+        raise RuntimeError("simulated redraw failure")
+
+    monkeypatch.setattr(MaskDrawer, "_commit_live", boom)
+    state = {}
+
+    def factory(ax):
+        widget = ax.figure.canvas.get_tk_widget()
+        top, root = widget.winfo_toplevel(), widget.winfo_toplevel().master
+        drawer = MaskDrawer(shape=(30, 30), ax=ax, verbose=False)
+        drawer.add_polygon([(4, 4), (20, 4), (20, 20), (8, 22)])
+
+        def press():
+            cmd = top.protocol("WM_DELETE_WINDOW")
+            state["cmd"], state["root"], state["top"] = cmd, root, top
+            top.tk.call(cmd)  # exactly what the window manager does
+
+        def watchdog():
+            state["watchdog"] = True
+            root.destroy()
+
+        widget.after(30, press)
+        widget.after(4000, watchdog)
+        return drawer
+
+    drawer = _run_in_popup(factory)
+    try:
+        assert not state.get("watchdog"), (
+            "the close button did nothing: only the 4 s watchdog ended mainloop"
+        )
+        assert state["cmd"].endswith("_leave"), (
+            f"pressed {state['cmd']!r}: the close button is not wired to the "
+            "wrapper that guarantees the teardown"
+        )
+        assert drawer._closed is True, "mainloop returned but the drawer never closed"
+        assert not _alive(state["root"]), "the window is still alive"
+        assert not _alive(state["top"]), (
+            "mainloop returned but the visible panel is still on screen -- the "
+            "reported symptom: a dead window the user cannot get rid of"
+        )
+        assert drawer.mask().sum() > 100, "polygons drawn before the failure were lost"
+    finally:
+        monkeypatch.undo()
+        drawer.teardown()
+
+
+@pytest.mark.skipif(not _display_available(), reason="needs a window system")
+def test_close_button_survives_a_catastrophic_close(monkeypatch):
+    """Belt and braces: even a close() that cannot run must not strand mainloop."""
+
+    def boom(self):
+        raise RuntimeError("simulated total failure")
+
+    monkeypatch.setattr(MaskDrawer, "close", boom)
+    state = {}
+
+    def factory(ax):
+        widget = ax.figure.canvas.get_tk_widget()
+        top, root = widget.winfo_toplevel(), widget.winfo_toplevel().master
+        drawer = MaskDrawer(shape=(20, 20), ax=ax, verbose=False)
+
+        def watchdog():
+            state["watchdog"] = True
+            root.destroy()
+
+        def press():
+            state["root"], state["top"] = root, top
+            top.tk.call(top.protocol("WM_DELETE_WINDOW"))
+
+        widget.after(30, press)
+        widget.after(4000, watchdog)
+        return drawer
+
+    drawer = _run_in_popup(factory)  # returns instead of hanging
+    monkeypatch.undo()               # so teardown() is not the sabotaged close
+    assert not state.get("watchdog"), (
+        "the close button did nothing: only the 4 s watchdog ended mainloop"
+    )
+    assert not _alive(state["root"]), "window survived a failed close()"
+    assert not _alive(state["top"]), "the visible panel survived"
+    drawer.teardown()
+
+
+@pytest.mark.skipif(not _display_available(), reason="needs a window system")
+def test_tk_callback_errors_are_reported_to_the_cell(capsys):
+    """Nothing in the window may fail silently -- that silence was the bug."""
+
+    seen = {}
+
+    def factory(ax):
+        widget = ax.figure.canvas.get_tk_widget()
+        top, root = widget.winfo_toplevel(), widget.winfo_toplevel().master
+        drawer = MaskDrawer(shape=(20, 20), ax=ax, verbose=False)
+
+        def probe():
+            hook = getattr(root, "report_callback_exception", None)
+            seen["qualname"] = getattr(hook, "__qualname__", None)
+            if hook is not None:
+                hook(RuntimeError, RuntimeError("kaboom"), None)
+            drawer.close()
+
+        widget.after(30, probe)
+        widget.after(4000, root.destroy)
+        return drawer
+
+    drawer = _run_in_popup(factory)
+    try:
+        assert str(seen.get("qualname", "")).startswith("_run_in_popup"), (
+            f"Tk errors go to {seen.get('qualname')!r}: the default handler writes "
+            "to stderr, which a notebook never shows, so a crash looks like a hang"
+        )
+        out = capsys.readouterr().out
+        assert "unexpected error in the drawing window" in out and "kaboom" in out
+    finally:
+        drawer.teardown()
+
+
+def _alive(widget_or_drawer) -> bool:
+    """Whether a Tk toplevel still exists.
+
+    A destroyed application does not return False from winfo_exists(), it raises
+    TclError -- which is the success case for every teardown test here.
+    """
+    import tkinter as tk
+
+    obj = widget_or_drawer
+    if hasattr(obj, "fig"):
+        try:
+            obj = obj.fig.canvas.get_tk_widget().winfo_toplevel()
+        except tk.TclError:
+            return False
+    try:
+        return bool(obj.winfo_exists())
+    except tk.TclError:
+        return False

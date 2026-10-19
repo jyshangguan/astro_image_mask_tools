@@ -29,6 +29,7 @@ Examples
 from __future__ import annotations
 
 import os
+import sys
 import warnings
 
 import numpy as np
@@ -448,17 +449,33 @@ class MaskDrawer:
     def close(self):
         """Finish the drawing: commit the live polygon and run close callbacks.
 
+        This never raises.  Committing the last polygon is ordinary drawing work
+        -- it mutates the selector and redraws artists -- and it used to run
+        unprotected ahead of the callbacks below.  When it failed, ``_closed``
+        stayed `False` and the close callbacks never ran, so the popup's
+        ``root.destroy()`` was never scheduled: ``mainloop()`` kept spinning, the
+        window refused to close, and because the exception had happened inside a
+        Tk event callback it went to the kernel's stderr, which a notebook never
+        shows.  The symptom was a silent, permanent hang.  So the commit is
+        best-effort now, and the callbacks are unconditional.
+
         The figure window itself is left for :meth:`teardown` (or the caller's
         own ``plt.close``) so that a callback can still read from the axes.
         """
         if self._closed:
             return
-        self._commit_live()
-        for cid in self._cids:
-            self.fig.canvas.mpl_disconnect(cid)
-        self._cids = []
-        self._selector.disconnect_events()
-        self._closed = True
+        self._closed = True  # first, so re-entry cannot commit twice
+        try:
+            self._commit_live()
+        except Exception as exc:
+            print(f"[masktools] could not finish the polygon in progress: {exc!r}")
+        try:
+            for cid in self._cids:
+                self.fig.canvas.mpl_disconnect(cid)
+            self._cids = []
+            self._selector.disconnect_events()
+        except Exception as exc:  # pragma: no cover - backend dependent
+            print(f"[masktools] while releasing event handlers: {exc!r}")
         for func in list(self._on_close_callbacks):
             try:
                 func(self)
@@ -530,8 +547,7 @@ class MaskDrawer:
         elif key == "h":
             print(_HELP)
         elif key in ("q", "c"):
-            self._commit_live()
-            self.close()
+            self.close()  # close() commits the polygon in progress
         else:
             key_press_handler(event, event.canvas, getattr(event, "manager", None))
 
@@ -565,7 +581,10 @@ class MaskDrawer:
     def _redraw_stash(self):
         """Redraw the committed polygons."""
         for line in self._stash_lines:
-            line.remove()
+            try:
+                line.remove()
+            except Exception:  # pragma: no cover - canvas may be going away
+                pass
         self._stash_lines = []
         if not self._committed:
             try:
@@ -589,8 +608,17 @@ class MaskDrawer:
             pass
 
     def _on_window_close(self, event):
-        """Window manager asked us to go away: finish the drawing."""
-        self.close()
+        """Window manager asked us to go away: finish the drawing.
+
+        This runs from matplotlib's ``close_event``, i.e. *while the canvas is
+        being torn down*.  An exception escaping here aborts that teardown, so
+        the Tk window survives and ``mainloop()`` never returns -- another way
+        to reach the same silent hang.  Report and carry on.
+        """
+        try:
+            self.close()
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[masktools] error while closing the window: {exc!r}")
 
     def _log(self, message):
         if self._verbose:
@@ -709,6 +737,19 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
     drawer = None
     try:
         root = tk.Tk()
+
+        def _report(exc, val, tb):
+            # Tk sends exceptions raised in event callbacks here.  The default
+            # handler writes to stderr, which a Jupyter notebook does not show,
+            # so a crash while closing looked exactly like a hang.  Print into
+            # the cell's own stream instead: visible, and still not fatal.
+            import traceback
+
+            print("[masktools] unexpected error in the drawing window:", flush=True)
+            traceback.print_exception(exc, val, tb, file=sys.stdout)
+            sys.stdout.flush()
+
+        root.report_callback_exception = _report
         root.withdraw()  # the visible window is a Toplevel child of this root
         window = tk.Toplevel(root)
         window.title(title)
@@ -722,9 +763,18 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
             # event callback.
             root.after(0, root.destroy)
 
+        def _leave():
+            # The window-manager close button.  close() is now exception-safe,
+            # but the teardown must not depend on that holding for every future
+            # edit, so destroying the window is unconditional.
+            try:
+                drawer.close()
+            finally:
+                root.after(0, root.destroy)
+
         drawer.on_close(_shutdown)
         # The window-manager close button means the same thing as 'q'.
-        window.protocol("WM_DELETE_WINDOW", drawer.close)
+        window.protocol("WM_DELETE_WINDOW", _leave)
         canvas.draw()
         root.mainloop()
     except tk.TclError as exc:  # pragma: no cover - needs a real display
