@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from ._draw import _HELP, MaskDrawer, _run_in_popup
+from ._draw import _HELP, MaskDrawer, _popup_mask
 from ._transform import scale_mask
 
 __all__ = ["mask_poly_expand", "mask_manual"]
@@ -123,9 +123,12 @@ def mask_manual(image=None, mask=None, *, shape=None, figsize=(8, 8),
     ``h``                          print this list
     ============================== ==========================================
 
-    The window is a plain Tk window, so the call behaves the same from a
-    Jupyter notebook, a Qt console, or a script: it blocks until you are
-    done, and it never changes your matplotlib backend.
+    The window is a plain Tk window, and it opens in a process of its own, so
+    the call behaves the same from a Jupyter notebook, a Qt console, or a
+    script: it waits until you are done, it never changes your matplotlib
+    backend, and the kernel is never asked to run Tk itself (a Tk event loop
+    inside a kernel is not always pumped, which leaves the window unresponsive
+    and the cell impossible to stop).
     """
     if image is None and mask is None and shape is None:
         raise ValueError(
@@ -136,16 +139,6 @@ def mask_manual(image=None, mask=None, *, shape=None, figsize=(8, 8),
         return MaskDrawer(data=image, mask=mask, shape=shape, **kwargs)
     if kwargs.get("verbose", True):
         print(_HELP)
-
-    def _build(ax):
-        drawer = MaskDrawer(data=image, mask=mask, shape=shape, ax=ax, **kwargs)
-        if image is None and mask is None:
-            # A blank canvas: give the axes the pixel extent the mask will be
-            # rasterised onto, or every click lands inside a default 0..1 box.
-            nrow, ncol = shape
-            ax.set_xlim(-0.5, ncol - 0.5)
-            ax.set_ylim(-0.5, nrow - 0.5)
-        return drawer
-
-    drawer = _run_in_popup(_build, figsize=figsize)
-    return drawer.mask(shape)
+    return _popup_mask(
+        image=image, mask=mask, shape=shape, figsize=figsize, **kwargs
+    )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import contextlib
+import sys
 
 import matplotlib
 import numpy as np
@@ -169,21 +170,20 @@ def test_output_is_always_one_valid_mask_with_no_shape_leak():
 # --------------------------------------------------------------------------
 
 
-def _fake_popup(action):
-    """Stand-in for the window runner that never opens a window.
+def _fake_popup_mask(action):
+    """Stand-in for the window process that never opens a window.
 
     *action* is ``"q"`` (close immediately, nothing drawn) or a callable handed
     the drawer, which is how a test "draws".
     """
 
-    def runner(factory, figsize=(8, 8), title=""):
-        ax = matplotlib.figure.Figure().add_subplot(111)
-        drawer = factory(ax)
+    def runner(image=None, mask=None, shape=None, figsize=(8, 8), **kwargs):
+        drawer = MaskDrawer(data=image, mask=mask, shape=shape, **kwargs)
         if callable(action):
             action(drawer)
         else:
             drawer.close()
-        return drawer
+        return drawer.mask(shape)
 
     return runner
 
@@ -199,7 +199,7 @@ def test_requires_something_to_draw_on():
 
 
 def test_block_false_returns_the_drawer_for_programmatic_use(monkeypatch):
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup("q"))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask("q"))
     drawer = mt.mask_manual(shape=(30, 30), block=False, verbose=False)
     try:
         drawer.add_polygon([(2, 2), (9, 2), (9, 9)])
@@ -211,7 +211,7 @@ def test_block_false_returns_the_drawer_for_programmatic_use(monkeypatch):
 
 
 def test_popup_path_returns_the_drawn_mask(monkeypatch):
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup(_draw_one))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask(_draw_one))
     out = mt.mask_manual(shape=(30, 30), verbose=False)
     assert out.dtype == bool and out.shape == (30, 30)
     assert out.sum() == 28
@@ -219,7 +219,7 @@ def test_popup_path_returns_the_drawn_mask(monkeypatch):
 
 def test_existing_mask_is_kept_and_new_regions_are_added(monkeypatch):
     data, mask, header = load_example()
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup(_draw_one))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask(_draw_one))
     out = mt.mask_manual(data, mask=mask, verbose=False)
     assert out.shape == data.shape
     assert np.all(out[mask]), "every originally-masked pixel stays masked"
@@ -231,41 +231,34 @@ def test_existing_mask_is_kept_and_new_regions_are_added(monkeypatch):
 def test_closing_without_drawing_returns_the_input_unchanged(monkeypatch):
     """Aborting is lossless: 'q' with no new polygon gives the mask back."""
     data, mask, header = load_example()
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup("q"))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask("q"))
     assert np.array_equal(mt.mask_manual(data, mask=mask, verbose=False), mask)
 
 
 def test_closing_without_drawing_and_no_mask_gives_an_empty_mask(monkeypatch):
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup("q"))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask("q"))
     out = mt.mask_manual(shape=(16, 24), verbose=False)
     assert out.shape == (16, 24) and out.dtype == bool and out.sum() == 0
 
 
 def test_shape_comes_from_the_image(monkeypatch):
     data, mask, header = load_example()
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup(_draw_one))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask(_draw_one))
     assert mt.mask_manual(data, verbose=False).shape == data.shape
 
 
-def test_blank_canvas_gets_a_pixel_extent(monkeypatch):
+def test_blank_canvas_gets_a_pixel_extent():
     """With no array to look at, the clicks still mean pixel coordinates."""
-    seen = {}
+    from masktools._draw import _build_drawer
 
-    def runner(factory, figsize=(8, 8), title=""):
-        ax = matplotlib.figure.Figure().add_subplot(111)
-        drawer = factory(ax)
-        seen["xlim"], seen["ylim"] = ax.get_xlim(), ax.get_ylim()
-        drawer.close()
-        return drawer
-
-    monkeypatch.setattr(mt.api, "_run_in_popup", runner)
-    mt.mask_manual(shape=(40, 60), verbose=False)
-    assert seen["xlim"] == pytest.approx((-0.5, 59.5))
-    assert seen["ylim"] == pytest.approx((-0.5, 39.5))
+    ax = matplotlib.figure.Figure().add_subplot(111)
+    _build_drawer(None, None, (40, 60), ax, {"verbose": False})
+    assert ax.get_xlim() == pytest.approx((-0.5, 59.5))
+    assert ax.get_ylim() == pytest.approx((-0.5, 39.5))
 
 
 def test_help_is_printed_unless_quiet(monkeypatch, capsys):
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup("q"))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask("q"))
     mt.mask_manual(shape=(10, 10))
     printed = capsys.readouterr().out
     assert "left click" in printed and "finish and close" in printed
@@ -273,8 +266,58 @@ def test_help_is_printed_unless_quiet(monkeypatch, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_the_window_runs_in_a_child_process_and_returns_the_mask(monkeypatch, tmp_path):
+    """mask_manual must not host Tk: in a kernel its loop never gets pumped.
+
+    The worker is the real module, with only the blocking window replaced by
+    an auto-drawing stand-in, so the pickle/array/spec/return path is exercised
+    as it is in production.
+    """
+    stub = tmp_path / "stub_popup.py"
+    stub.write_text(
+        "import sys\n"
+        "import matplotlib\n"
+        "matplotlib.use('Agg')\n"
+        "import masktools._draw as draw\n"
+        "def fake_run(factory, figsize=(8, 8), title='', parent_pid=None):\n"
+        "    from matplotlib.figure import Figure\n"
+        "    ax = Figure().add_subplot(111)\n"
+        "    drawer = factory(ax)\n"
+        "    drawer.add_polygon([(2, 2), (9, 2), (9, 9)])\n"
+        "    drawer.close()\n"
+        "    return drawer\n"
+        "draw._run_in_popup = fake_run\n"
+        "from masktools._popup_worker import main\n"
+        "main(['worker', sys.argv[1]])\n"
+    )
+    from masktools import _draw
+
+    monkeypatch.setattr(
+        _draw, "_popup_command", lambda spec: [sys.executable, str(stub), str(spec)]
+    )
+    base = np.zeros((12, 12), bool)
+    base[0, 0] = True
+    out = mt.mask_manual(mask=base, verbose=False)
+    assert out.shape == (12, 12)
+    assert out[0, 0], "the mask passed in was not handed to the window"
+    assert out[4, 6], "the polygon drawn in the window did not come back"
+    assert out.sum() > 20
+
+
+def test_a_window_process_that_dies_is_reported(monkeypatch, tmp_path):
+    stub = tmp_path / "dead_popup.py"
+    stub.write_text("import sys\nprint('boom')\nsys.exit(3)\n")
+    from masktools import _draw
+
+    monkeypatch.setattr(
+        _draw, "_popup_command", lambda spec: [sys.executable, str(stub), str(spec)]
+    )
+    with pytest.raises(RuntimeError, match="exited with code 3"):
+        mt.mask_manual(shape=(8, 8), verbose=False)
+
+
 def test_unknown_options_are_not_swallowed(monkeypatch):
-    monkeypatch.setattr(mt.api, "_run_in_popup", _fake_popup("q"))
+    monkeypatch.setattr(mt.api, "_popup_mask", _fake_popup_mask("q"))
     with pytest.raises(TypeError, match="not_a_drawer_option"):
         mt.mask_manual(shape=(10, 10), verbose=False, not_a_drawer_option=1)
 

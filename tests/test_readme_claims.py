@@ -218,15 +218,16 @@ def test_abort_loses_nothing(monkeypatch):
     """'Closing the window without drawing loses nothing'."""
     import masktools.api as api
 
-    def close_at_once(factory, figsize=(8, 8), title=""):
-        import matplotlib
-
-        drawer = factory(matplotlib.figure.Figure().add_subplot(111))
-        drawer.close()
-        return drawer
-
-    monkeypatch.setattr(api, "_run_in_popup", close_at_once)
     image, mask, header = frame_values()
+
+    def close_at_once(image=None, mask=None, shape=None, figsize=(8, 8), **kwargs):
+        from masktools._draw import MaskDrawer
+
+        drawer = MaskDrawer(data=image, mask=mask, shape=shape, **kwargs)
+        drawer.close()
+        return drawer.mask(shape)
+
+    monkeypatch.setattr(api, "_popup_mask", close_at_once)
     assert np.array_equal(mt.mask_manual(image, mask=mask, verbose=False), mask)
     empty = mt.mask_manual(shape=(16, 24), verbose=False)
     assert empty.sum() == 0 and empty.shape == (16, 24) and empty.dtype == bool

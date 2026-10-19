@@ -29,6 +29,7 @@ Examples
 from __future__ import annotations
 
 import os
+import pickle
 import signal
 import sys
 import threading
@@ -766,6 +767,80 @@ def _blit_ok(fig) -> bool:
     return isinstance(manager, FigureManagerBase)
 
 
+#: Entry point of the process that hosts the window (see _popup_mask).
+_POPUP_WORKER = "masktools._popup_worker"
+
+
+def _build_drawer(image, mask, shape, ax, kwargs):
+    """Fill *ax* with the drawer for a popup window and return it.
+
+    Shared by the window process and by the in-process runner so both give the
+    same canvas: in particular a blank canvas gets the pixel extent the mask
+    will be rasterised onto, or every click lands inside a default 0..1 box.
+    """
+    drawer = MaskDrawer(data=image, mask=mask, shape=shape, ax=ax, **kwargs)
+    if image is None and mask is None:
+        nrow, ncol = shape
+        ax.set_xlim(-0.5, ncol - 0.5)
+        ax.set_ylim(-0.5, nrow - 0.5)
+    return drawer
+
+
+def _popup_command(spec_path):
+    """The argv that runs the window in its own process (patched in tests)."""
+    return [sys.executable, "-m", _POPUP_WORKER, str(spec_path)]
+
+
+def _popup_mask(image=None, mask=None, shape=None, figsize=(8, 8), **kwargs):
+    """Show the drawing window and return the mask.
+
+    The window lives in a process of its own -- :mod:`masktools._popup_worker`
+    explains why.  The arrays and settings are pickled into a temporary
+    directory, the child writes the finished mask there, and this function
+    returns it.  Stopping the cell leaves ``wait()`` as a KeyboardInterrupt and
+    takes the window down with it.
+    """
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="masktools-popup-") as tmpdir:
+        tmp = Path(tmpdir)
+        spec = {
+            "figsize": tuple(float(v) for v in figsize),
+            "kwargs": dict(kwargs),
+            "out": str(tmp / "mask.npy"),
+        }
+        if image is not None:
+            np.save(tmp / "data.npy", np.asarray(image, dtype=float))
+            spec["data"] = str(tmp / "data.npy")
+        if mask is not None:
+            np.save(tmp / "mask_in.npy", np.asarray(mask, dtype=bool))
+            spec["mask"] = str(tmp / "mask_in.npy")
+        if shape is not None:
+            spec["shape"] = tuple(int(v) for v in shape)
+        spec_path = tmp / "spec.pickle"
+        with open(spec_path, "wb") as fh:
+            pickle.dump(spec, fh)
+
+        proc = subprocess.Popen(_popup_command(spec_path))
+        try:
+            code = proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:  # pragma: no cover
+                proc.kill()
+            raise
+        if code != 0:
+            raise RuntimeError(
+                f"the drawing window exited with code {code}, so no mask came "
+                "back; the message from it is printed above"
+            )
+        return np.load(spec["out"])
+
+
 _POPUP_TITLE = "masktools -- draw a mask (q when done, h for help)"
 
 #: The one Tk interpreter this process uses, created on first use.
@@ -813,7 +888,8 @@ def _tcl_root(tk):
 
 
 
-def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
+def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE,
+                  parent_pid: int | None = None):
     """Run *factory(ax)* inside a dedicated window and block until it closes.
 
     The window is deliberately **not** a pyplot figure: it is a bare
@@ -905,9 +981,14 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
         # takes the exception in the middle of its own dispatch, stops
         # servicing events, and mainloop() never returns -- the window goes
         # dead (it ignores the mouse, 'q' and its own close button) and the
-        # cell stays blocked for the rest of the kernel's life.  So SIGINT is
-        # intercepted for the duration and treated like the close button,
-        # which still returns the polygons finished so far.
+        # cell stays blocked for the rest of the kernel's life.  So the first
+        # interrupt is turned into "close the window", which still returns the
+        # polygons finished so far.
+        #
+        # (When the Tk loop is not pumping events at all -- macOS reports
+        # "error messaging the mach port for IMKCFRunLoopWakeUpReliable" then
+        # -- nothing in this process can run, which is why the window itself
+        # lives in a child process: see _popup_mask.)
         stop_requested = []
         previous_sigint = None
 
@@ -927,6 +1008,17 @@ def _run_in_popup(factory, figsize=(8, 8), title: str = _POPUP_TITLE):
             if getattr(drawer, "_closed", False):
                 return  # the window is already on its way out
             root.after(100, _poll_for_stop)
+
+        if parent_pid is not None:
+            def _poll_parent():
+                # The window outlives a killed caller otherwise: a dead parent
+                # reparents us to launchd, and the ghost window is unclosable.
+                if os.getppid() != parent_pid:
+                    _leave()
+                    return
+                root.after(500, _poll_parent)
+
+            root.after(500, _poll_parent)
 
         root.after(100, _poll_for_stop)
         canvas.draw()
